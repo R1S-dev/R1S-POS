@@ -15,7 +15,7 @@ export function buildPrintCSS(){
       .center { text-align:center }
       .row { display:flex; justify-content:space-between; gap:8px }
       .hr { border-top:1px dashed #000; margin:8px 0 }
-      .small { font-size:11.5px }
+      .small { font-size:15px }
       .bold { font-weight:700 }
       .mono { font-variant-numeric: tabular-nums; }
       .name { flex:1; padding-right:6px }
@@ -38,3 +38,4 @@ export function openPrint(html){
   w.document.close()
   w.focus()
 }
+
