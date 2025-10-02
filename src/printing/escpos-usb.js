@@ -1,5 +1,6 @@
 // src/printing/escpos-usb.js
-// Minimalni WebUSB ESC/POS helper za Epson-kompatibilne USB termalne štampače.
+// WebUSB ESC/POS helper za Epson-kompatibilne termalne USB štampače.
+// Prošireni filteri (classCode + više vendorId), robustnije biranje endpointa.
 
 let device = null;
 let outEndpoint = 1;
@@ -39,41 +40,72 @@ const CUT_PART = new Uint8Array([0x1D,0x56,0x42,0x00]); // partial cut
 
 export async function usbIsAvailable(){ return !!navigator.usb; }
 
-export async function ensureConnected({
-  vendorFilters = [0x04b8, 0x1cb0, 0x28e9], // Epson + uobičajeni klonovi (primer)
-} = {}) {
+// Prošireni vendor ID-ovi (Epson, Star, Bixolon, XPrinter, CH340, STM itd.)
+// + classCode filteri: 0x07 (Printer), 0xff (Vendor-specific)
+const DEFAULT_FILTERS = [
+  // Class-based (hvata i nepoznate vendore)
+  { classCode: 0x07 },   // Printer Class
+  { classCode: 0xff },   // Vendor specific (mnogi klonovi)
+
+  // Najčešći vendori termalnih štampača / USB-serial bridgeva
+  { vendorId: 0x04b8 }, // Epson
+  { vendorId: 0x0519 }, // Star
+  { vendorId: 0x1504 }, // Bixolon
+  { vendorId: 0x28e9 }, // Magic Control / POS klonovi
+  { vendorId: 0x0fe6 }, // ICS
+  { vendorId: 0x1cbe }, // Prolific?
+  { vendorId: 0x1a86 }, // QinHeng CH340/CH341 (često u jeftinim štampačima)
+  { vendorId: 0x0483 }, // STMicro (nekad vendor-specific fw)
+  { vendorId: 0x0416 }, // Winbond/Nuvoton (viđano u nekim POS uređajima)
+];
+
+export async function ensureConnected({ vendorFilters = DEFAULT_FILTERS } = {}) {
   if (!navigator.usb) throw new Error('WebUSB nije dostupan u ovom pregledaču.');
   if (device?.opened) return true;
 
-  // Ako je već odobren neki uređaj za ovaj origin — uzmi ga
+  // Ako je već odobren uređaj — uzmi ga
   const allowed = await navigator.usb.getDevices();
   device = allowed[0];
 
   if (!device) {
-    // Traži od korisnika da izabere USB uređaj (mora iz user gesture-a)
-    const filters = vendorFilters.filter(Boolean).map(v => ({ vendorId: v }));
-    device = await navigator.usb.requestDevice({ filters: filters.length ? filters : undefined });
+    // Zatraži izbor uređaja — koristimo široke filtere
+    // (mora iz user gesture-a)
+    device = await navigator.usb.requestDevice({ filters: vendorFilters });
   }
 
   await device.open();
   if (!device.configuration) await device.selectConfiguration(1);
 
-  // Nađi interfejs sa OUT endpoint-om
+  // Pronađi interfejs i OUT endpoint (može biti alternate setting)
   let found = false;
+  let pickedAlt = null;
+
   for (const iface of device.configuration.interfaces) {
     for (const alt of iface.alternates) {
-      const out = alt.endpoints?.find(e => e.direction === 'out');
+      const out = (alt.endpoints || []).find(e => e.direction === 'out');
       if (out) {
         ifaceNumber = iface.interfaceNumber;
         outEndpoint = out.endpointNumber;
-        found = true; break;
+        pickedAlt = alt;
+        found = true;
+        break;
       }
     }
     if (found) break;
   }
-  if (!found) throw new Error('Nije pronađen izlazni endpoint na štampaču.');
+
+  if (!found) {
+    await device.close();
+    device = null;
+    throw new Error('Nije pronađen izlazni (OUT) endpoint na štampaču.');
+  }
 
   await device.claimInterface(ifaceNumber);
+  // Ako alternate setting nije 0, eksplicitno ga selektuj
+  if (typeof pickedAlt?.alternateSetting === 'number' && pickedAlt.alternateSetting !== 0) {
+    try { await device.selectAlternateInterface(ifaceNumber, pickedAlt.alternateSetting); } catch {}
+  }
+
   return true;
 }
 
